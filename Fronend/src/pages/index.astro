@@ -1,8 +1,10 @@
 ---
 import '../styles/global.css';
 import '../styles/tailwind.css';
+import { API_ENDPOINTS } from '../config/api.js';
 
 const pageTitle = "Acceso al Sistema - SIGE";
+const apiLogin = API_ENDPOINTS.auth.login;
 ---
 <!DOCTYPE html>
 <html lang="es">
@@ -31,6 +33,15 @@ const pageTitle = "Acceso al Sistema - SIGE";
             box-shadow: 0 0 20px rgba(76, 175, 80, 0.7);
         }
     </style>
+
+    <script is:inline>
+        window.API_ENDPOINTS = {
+            auth: {
+                login: 'https://nginx-production-728f.up.railway.app/api/auth/login',
+                resetPassword: 'https://nginx-production-728f.up.railway.app/api/auth/reset-password'
+            }
+        };
+    </script>
 </head>
 
 <body class="min-h-screen antialiased font-inter relative">
@@ -44,7 +55,7 @@ const pageTitle = "Acceso al Sistema - SIGE";
         message: '',
         isLoading: false,
 
-        handleLogin() {
+        async handleLogin() {
             this.error = '';
             this.isLoading = true;
 
@@ -54,31 +65,66 @@ const pageTitle = "Acceso al Sistema - SIGE";
                 return;
             }
 
-            // --- BASE DE DATOS DE USUARIOS ---
-            // Se actualizó la ruta de redirección para el rol 'student'
-            const users = [
-                { email: 'admin@uni.edu', pass: '123456', role: 'admin', redirect: '/Dashboard' },
-                { email: 'estudiante@uni.edu', pass: 'alumno123', role: 'student', redirect: '/Estudiante/PortalEstudiante' }
+            // MODO DEMO LOCAL - Usuarios de prueba
+            const localUsers = [
+                { email: 'admin@cbta71.edu', pass: 'admin123', role: 'admin', name: 'Administrador' },
+                { email: 'estudiante@cbta71.edu', pass: 'estudiante123', role: 'student', name: 'Estudiante Demo' }
             ];
 
-            const userFound = users.find(u => u.email === this.email && u.pass === this.password);
+            const localUser = localUsers.find(u => u.email === this.email && u.pass === this.password);
 
-            setTimeout(() => {
+            if (localUser) {
+                // Login local exitoso
                 this.isLoading = false;
+                localStorage.setItem('access_token', 'demo-token-' + Date.now());
+                localStorage.setItem('userRole', localUser.role);
+                localStorage.setItem('userData', JSON.stringify({ name: localUser.name, role: localUser.role, email: localUser.email }));
+                
+                this.error = `✅ Bienvenido ${localUser.name}. Redirigiendo...`;
+                const redirect = localUser.role === 'admin' ? '/Dashboard' : '/Estudiante/PortalEstudiante';
+                setTimeout(() => window.location.href = redirect, 800);
+                return;
+            }
 
-                if (userFound) {
-                    this.error = `✅ Bienvenido (${userFound.role}). Redirigiendo...`;
-                    
-                    localStorage.setItem('userRole', userFound.role);
-                    
-                    setTimeout(() => window.location.href = userFound.redirect, 800);
+            // Si no es usuario local, intentar con la API
+            try {
+                const response = await fetch(window.API_ENDPOINTS.auth.login, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        email: this.email,
+                        password: this.password
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.access_token) {
+                    // Guardar token y datos de usuario
+                    localStorage.setItem('access_token', data.access_token);
+                    localStorage.setItem('userRole', data.user?.role || 'student');
+                    localStorage.setItem('userData', JSON.stringify(data.user));
+
+                    this.error = `✅ Bienvenido ${data.user?.name || ''}. Redirigiendo...`;
+
+                    // Redirigir según el rol
+                    const redirect = data.user?.role === 'admin' ? '/Dashboard' : '/Estudiante/PortalEstudiante';
+                    setTimeout(() => window.location.href = redirect, 800);
                 } else {
-                    this.error = '❌ Credenciales incorrectas.';
+                    this.error = '❌ ' + (data.message || 'Credenciales incorrectas.');
+                    this.isLoading = false;
                 }
-            }, 900);
+            } catch (error) {
+                console.error('Error de login:', error);
+                this.error = '❌ Error de conexión con el servidor. Intenta con credenciales locales.';
+                this.isLoading = false;
+            }
         },
 
-        handleRecovery() {
+        async handleRecovery() {
             this.message = '';
             this.isLoading = true;
             if (!this.email) {
@@ -86,10 +132,30 @@ const pageTitle = "Acceso al Sistema - SIGE";
                 this.isLoading = false;
                 return;
             }
-            setTimeout(() => {
+
+            try {
+                const response = await fetch(window.API_ENDPOINTS.auth.resetPassword, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({ email: this.email })
+                });
+
+                const data = await response.json();
                 this.isLoading = false;
-                this.message = '📩 Se ha enviado un enlace de recuperación a tu correo.';
-            }, 900);
+
+                if (response.ok) {
+                    this.message = '📩 ' + (data.message || 'Se ha enviado un enlace de recuperación a tu correo.');
+                } else {
+                    this.message = '⚠️ ' + (data.message || 'Error al enviar el correo.');
+                }
+            } catch (error) {
+                console.error('Error de recuperación:', error);
+                this.isLoading = false;
+                this.message = '⚠️ Error de conexión. Por favor intenta de nuevo.';
+            }
         }
     }"
 >
@@ -132,7 +198,11 @@ const pageTitle = "Acceso al Sistema - SIGE";
                     <button type="button" @click="mode = 'recover'; error = ''; message = '';" class="text-sm font-medium text-blue-600 hover:text-blue-800 transition-colors">
                         ¿Olvidaste tu contraseña?
                     </button>
-                    <p class="text-gray-400 italic">Prueba con: estudiante@uni.edu / alumno123</p>
+                    <div class="text-gray-500 text-xs space-y-1">
+                        <p class="font-semibold">🔐 Credenciales de prueba:</p>
+                        <p class="italic">Admin: admin@cbta71.edu / admin123</p>
+                        <p class="italic">Estudiante: estudiante@cbta71.edu / estudiante123</p>
+                    </div>
                 </div>
             </form>
 
